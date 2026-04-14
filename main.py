@@ -112,13 +112,13 @@ async def get_weather_news(city: str = Query(None, description="City name")):
     query = f"weather {city}" if city else "weather"
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            NEWS_URL,
+            "https://newsapi.org/v2/everything",
             params={
                 "q": query,
                 "apiKey": NEWS_API_KEY,
                 "language": "en",
                 "sortBy": "publishedAt",
-                "pageSize": 6,
+                "pageSize": 10,
             },
         )
     if resp.status_code != 200:
@@ -127,13 +127,21 @@ async def get_weather_news(city: str = Query(None, description="City name")):
     data = resp.json()
     articles = []
     for a in data.get("articles", []):
-        if a.get("title") and a.get("url") and "[Removed]" not in a.get("title", ""):
-            articles.append({
-                "title": a["title"],
-                "description": a.get("description", ""),
-                "url": a["url"],
-                "image": a.get("urlToImage"),
-                "source": a["source"]["name"],
-                "published_at": a["publishedAt"],
-            })
-    return {"articles": articles[:6]}
+        title = a.get("title", "")
+        url = a.get("url", "")
+        if not title or not url:
+            continue
+        if "[Removed]" in title or "[Removed]" in url:
+            continue
+        articles.append({
+            "title": title,
+            "description": a.get("description") or "",
+            "url": url,
+            "image": a.get("urlToImage"),
+            "source": a.get("source", {}).get("name", "Unknown"),
+            "published_at": a.get("publishedAt", ""),
+        })
+        if len(articles) == 6:
+            break
+
+    return {"articles": articles}
