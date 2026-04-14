@@ -16,7 +16,9 @@ app.add_middleware(
 )
 
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 BASE_URL = "https://api.openweathermap.org/data/2.5"
+NEWS_URL = "https://newsapi.org/v2/everything"
 
 
 def check_api_key():
@@ -100,3 +102,38 @@ async def get_forecast(
             daily[date]["temp_max"] = max(daily[date]["temp_max"], item["main"]["temp_max"])
 
     return {"city": data["city"]["name"], "forecast": list(daily.values())[:5]}
+
+
+@app.get("/weather/news")
+async def get_weather_news(city: str = Query(None, description="City name")):
+    if not NEWS_API_KEY:
+        raise HTTPException(status_code=500, detail="News API key not configured")
+
+    query = f"weather {city}" if city else "weather"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            NEWS_URL,
+            params={
+                "q": query,
+                "apiKey": NEWS_API_KEY,
+                "language": "en",
+                "sortBy": "publishedAt",
+                "pageSize": 6,
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail=f"News API error: {resp.text}")
+
+    data = resp.json()
+    articles = []
+    for a in data.get("articles", []):
+        if a.get("title") and a.get("url") and "[Removed]" not in a.get("title", ""):
+            articles.append({
+                "title": a["title"],
+                "description": a.get("description", ""),
+                "url": a["url"],
+                "image": a.get("urlToImage"),
+                "source": a["source"]["name"],
+                "published_at": a["publishedAt"],
+            })
+    return {"articles": articles[:6]}
