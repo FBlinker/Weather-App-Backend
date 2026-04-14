@@ -25,13 +25,21 @@ def check_api_key():
 
 
 @app.get("/weather/current")
-async def get_current_weather(city: str = Query(..., description="City name")):
+async def get_current_weather(
+    city: str = Query(None, description="City name"),
+    lat: float = Query(None, description="Latitude"),
+    lon: float = Query(None, description="Longitude"),
+):
     check_api_key()
+    if lat is not None and lon is not None:
+        params = {"lat": lat, "lon": lon, "appid": API_KEY, "units": "metric"}
+    elif city:
+        params = {"q": city, "appid": API_KEY, "units": "metric"}
+    else:
+        raise HTTPException(status_code=400, detail="Provide either city or lat/lon")
+
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{BASE_URL}/weather",
-            params={"q": city, "appid": API_KEY, "units": "metric"},
-        )
+        resp = await client.get(f"{BASE_URL}/weather", params=params)
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail=f"City '{city}' not found")
     if resp.status_code != 200:
@@ -54,13 +62,21 @@ async def get_current_weather(city: str = Query(..., description="City name")):
 
 
 @app.get("/weather/forecast")
-async def get_forecast(city: str = Query(..., description="City name")):
+async def get_forecast(
+    city: str = Query(None, description="City name"),
+    lat: float = Query(None, description="Latitude"),
+    lon: float = Query(None, description="Longitude"),
+):
     check_api_key()
+    if lat is not None and lon is not None:
+        params = {"lat": lat, "lon": lon, "appid": API_KEY, "units": "metric", "cnt": 40}
+    elif city:
+        params = {"q": city, "appid": API_KEY, "units": "metric", "cnt": 40}
+    else:
+        raise HTTPException(status_code=400, detail="Provide either city or lat/lon")
+
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{BASE_URL}/forecast",
-            params={"q": city, "appid": API_KEY, "units": "metric", "cnt": 40},
-        )
+        resp = await client.get(f"{BASE_URL}/forecast", params=params)
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail=f"City '{city}' not found")
     if resp.status_code != 200:
