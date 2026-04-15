@@ -29,7 +29,7 @@ BASE_URL = "https://api.openweathermap.org/data/2.5"
 NEWS_URL = "https://newsapi.org/v2/everything"
 
 # ── Auth setup ──
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # In-memory user store (replace with a DB in production)
