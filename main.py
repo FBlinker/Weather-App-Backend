@@ -38,8 +38,23 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-# In-memory user store (replace with a DB in production)
-users_db: dict = {}
+# ── User store (file-persisted) ──
+import json
+
+USERS_FILE = "users.json"
+
+def load_users() -> dict:
+    try:
+        with open(USERS_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_users(db: dict):
+    with open(USERS_FILE, "w") as f:
+        json.dump(db, f)
+
+users_db: dict = load_users()
 
 class UserRegister(BaseModel):
     username: str
@@ -77,6 +92,7 @@ async def register(body: UserRegister):
     if len(body.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     users_db[body.username] = hash_password(body.password)
+    save_users(users_db)
     token = create_token(body.username)
     return {"access_token": token, "token_type": "bearer", "username": body.username}
 
@@ -144,6 +160,7 @@ async def google_callback(code: str = Query(...)):
 
     if user_key not in users_db:
         users_db[user_key] = hash_password(secrets.token_hex(32))
+        save_users(users_db)
 
     jwt_token = create_token(username)
     # Redirect to frontend with token
