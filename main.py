@@ -1,12 +1,14 @@
 from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import httpx
 import os
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,9 +26,12 @@ API_KEY = os.getenv("OPENWEATHER_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 JWT_SECRET = os.getenv("JWT_SECRET", "changeme")
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_MINUTES = 60 * 24  # 24 hours
+JWT_EXPIRE_MINUTES = 60 * 24
 BASE_URL = "https://api.openweathermap.org/data/2.5"
 NEWS_URL = "https://newsapi.org/v2/everything"
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # ── Auth setup ──
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
@@ -85,6 +90,65 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
 @app.get("/auth/me")
 async def me(username: str = Depends(get_current_user)):
     return {"username": username}
+
+# ── Google OAuth ──
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+@app.get("/auth/google")
+async def google_login():
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": "http://localhost:8000/auth/google/callback",
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+    }
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    return RedirectResponse(f"{GOOGLE_AUTH_URL}?{query}")
+
+@app.get("/auth/google/callback")
+async def google_callback(code: str = Query(...)):
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    async with httpx.AsyncClient() as client:
+        # Exchange code for token
+        token_resp = await client.post(GOOGLE_TOKEN_URL, data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": "http://localhost:8000/auth/google/callback",
+            "grant_type": "authorization_code",
+        })
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to exchange Google code")
+        access_token = token_resp.json().get("access_token")
+
+        # Get user info
+        user_resp = await client.get(
+            GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        if user_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to get Google user info")
+        user_info = user_resp.json()
+
+    # Use email as username, register if new
+    username = user_info.get("email", "").split("@")[0]
+    google_id = user_info.get("sub")
+    user_key = f"google:{google_id}"
+
+    if user_key not in users_db:
+        users_db[user_key] = hash_password(secrets.token_hex(32))
+
+    jwt_token = create_token(username)
+    # Redirect to frontend with token
+    return RedirectResponse(
+        f"{FRONTEND_URL}?token={jwt_token}&username={username}"
+    )
 
 
 def check_api_key():
