@@ -1,5 +1,10 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
 import httpx
 import os
 from dotenv import load_dotenv
@@ -17,8 +22,69 @@ app.add_middleware(
 
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+JWT_SECRET = os.getenv("JWT_SECRET", "changeme")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_MINUTES = 60 * 24  # 24 hours
 BASE_URL = "https://api.openweathermap.org/data/2.5"
 NEWS_URL = "https://newsapi.org/v2/everything"
+
+# ── Auth setup ──
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+# In-memory user store (replace with a DB in production)
+users_db: dict = {}
+
+class UserRegister(BaseModel):
+    username: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+def create_token(username: str) -> str:
+    expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    return jwt.encode({"sub": username, "exp": expire}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return username
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+# ── Auth endpoints ──
+@app.post("/auth/register", status_code=201)
+async def register(body: UserRegister):
+    if body.username in users_db:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    if len(body.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    users_db[body.username] = hash_password(body.password)
+    token = create_token(body.username)
+    return {"access_token": token, "token_type": "bearer", "username": body.username}
+
+@app.post("/auth/login")
+async def login(form: OAuth2PasswordRequestForm = Depends()):
+    user_hash = users_db.get(form.username)
+    if not user_hash or not verify_password(form.password, user_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = create_token(form.username)
+    return {"access_token": token, "token_type": "bearer", "username": form.username}
+
+@app.get("/auth/me")
+async def me(username: str = Depends(get_current_user)):
+    return {"username": username}
 
 
 def check_api_key():
@@ -28,9 +94,10 @@ def check_api_key():
 
 @app.get("/weather/current")
 async def get_current_weather(
-    city: str = Query(None, description="City name"),
-    lat: float = Query(None, description="Latitude"),
-    lon: float = Query(None, description="Longitude"),
+    city: str = Query(None),
+    lat: float = Query(None),
+    lon: float = Query(None),
+    _: str = Depends(get_current_user),
 ):
     check_api_key()
     if lat is not None and lon is not None:
@@ -65,9 +132,10 @@ async def get_current_weather(
 
 @app.get("/weather/forecast")
 async def get_forecast(
-    city: str = Query(None, description="City name"),
-    lat: float = Query(None, description="Latitude"),
-    lon: float = Query(None, description="Longitude"),
+    city: str = Query(None),
+    lat: float = Query(None),
+    lon: float = Query(None),
+    _: str = Depends(get_current_user),
 ):
     check_api_key()
     if lat is not None and lon is not None:
@@ -105,7 +173,7 @@ async def get_forecast(
 
 
 @app.get("/weather/news")
-async def get_weather_news(city: str = Query(None, description="City name")):
+async def get_weather_news(city: str = Query(None), _: str = Depends(get_current_user)):
     if not NEWS_API_KEY:
         raise HTTPException(status_code=500, detail="News API key not configured")
 
@@ -145,3 +213,41 @@ async def get_weather_news(city: str = Query(None, description="City name")):
             break
 
     return {"articles": articles}
+
+
+@app.get("/weather/forecast/detail")
+async def get_forecast_detail(
+    city: str = Query(None),
+    lat: float = Query(None),
+    lon: float = Query(None),
+    date: str = Query(...),
+    _: str = Depends(get_current_user),
+):
+    check_api_key()
+    if lat is not None and lon is not None:
+        params = {"lat": lat, "lon": lon, "appid": API_KEY, "units": "metric", "cnt": 40}
+    elif city:
+        params = {"q": city, "appid": API_KEY, "units": "metric", "cnt": 40}
+    else:
+        raise HTTPException(status_code=400, detail="Provide either city or lat/lon")
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{BASE_URL}/forecast", params=params)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="Weather API error")
+
+    data = resp.json()
+    slots = []
+    for item in data["list"]:
+        if item["dt_txt"].startswith(date):
+            slots.append({
+                "time": item["dt_txt"].split(" ")[1][:5],
+                "temp": item["main"]["temp"],
+                "feels_like": item["main"]["feels_like"],
+                "humidity": item["main"]["humidity"],
+                "description": item["weather"][0]["description"],
+                "icon": item["weather"][0]["icon"],
+                "wind_speed": item["wind"]["speed"],
+                "pop": round(item.get("pop", 0) * 100),
+            })
+    return {"date": date, "slots": slots}
