@@ -20,6 +20,7 @@ app.add_middleware(
     allow_origins=["http://localhost:5173", "http://localhost:5174"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
