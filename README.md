@@ -74,7 +74,6 @@ weather-app/
     ├── package.json
     └── vite.config.js
 ```
-
 ---
 
 ## 🚀 Getting Started
